@@ -2,28 +2,23 @@
 #include <Servo.h>
 #include <HTInfraredSeeker.h>
 
-// Ponte H 1
-#define in_1_ph_1 25 // Motor 2
-#define in_2_ph_1 24 // Motor 2
-#define in_3_ph_1 23 // Motor 1
-#define in_4_ph_1 22 // Motor 1
+#define in_1_ph_1 25
+#define in_2_ph_1 24
+#define in_3_ph_1 23
+#define in_4_ph_1 22
 
-// Ponte H 2
-#define in_1_ph_2 47 // Motor 4
-#define in_2_ph_2 46 // Motor 4
-#define in_3_ph_2 49 // Motor 3
-#define in_4_ph_2 48 // Motor 3
+#define in_1_ph_2 47
+#define in_2_ph_2 46
+#define in_3_ph_2 49
+#define in_4_ph_2 48
 
-// PWM calibrado
-#define pwm_2 2 // Motor 2
-#define pwm_1 3 // Motor 1
-#define pwm_4 4 // Motor 4
-#define pwm_3 5 // Motor 3
+#define pwm_2 2
+#define pwm_1 3
+#define pwm_4 4
+#define pwm_3 5
 
-// Fim de curso
 #define fim_curso_pin 7
 
-// Dribbler / ESC
 #define DRIBBLER_ESC_PIN 9
 #define DRIBBLER_MIN_US 1000
 #define DRIBBLER_MAX_US 2000
@@ -32,15 +27,12 @@ Servo esc;
 int dribblerMicroAtual = DRIBBLER_MIN_US;
 bool dribblerLigado = false;
 
-// Fim de curso
 const bool FIM_CURSO_ATIVO_LOW = true;
 const unsigned long DEBOUNCE_FIM_CURSO_MS = 35;
 
-// Ultrassonico
 #define trig_ultrassonico 30
 #define echo_ultrassonico 31
 
-// LDR / Multiplexador
 #define S0 34
 #define S1 35
 #define S2 36
@@ -53,6 +45,21 @@ const unsigned long DEBOUNCE_FIM_CURSO_MS = 35;
 int ldr[16];
 bool linhaBrancaDetectada = false;
 int sensorBranco = -1;
+int lineAngle = 500;
+
+float vectorX[16] = {
+   1.0000,  0.9239,  0.7071,  0.3827,
+   0.0000, -0.3827, -0.7071, -0.9239,
+  -1.0000, -0.9239, -0.7071, -0.3827,
+   0.0000,  0.3827,  0.7071,  0.9239
+};
+
+float vectorY[16] = {
+   0.0000,  0.3827,  0.7071,  0.9239,
+   1.0000,  0.9239,  0.7071,  0.3827,
+   0.0000, -0.3827, -0.7071, -0.9239,
+  -1.0000, -0.9239, -0.7071, -0.3827
+};
 
 const int LIMIAR_BRANCO = 500;
 const bool BRANCO_VALOR_MAIOR = true;
@@ -67,7 +74,6 @@ bool bolaCapturada = false;
 int ballDirecao = 0;
 int ballIntens = 0;
 
-// Velocidades calibradas
 const int M1_FORWARD_SPEED = 220;
 const int M2_FORWARD_SPEED = 255;
 const int M3_FORWARD_SPEED = 140;
@@ -88,11 +94,20 @@ const int M2_RIGHT_ROT_SPEED = 255;
 const int M3_RIGHT_ROT_SPEED = 140;
 const int M4_RIGHT_ROT_SPEED = 255;
 
+const int M1_LEFT_SPEED = 220;
+const int M2_LEFT_SPEED = 255;
+const int M3_LEFT_SPEED = 140;
+const int M4_LEFT_SPEED = 255;
+
+const int M1_RIGHT_SPEED = 220;
+const int M2_RIGHT_SPEED = 255;
+const int M3_RIGHT_SPEED = 140;
+const int M4_RIGHT_SPEED = 255;
+
 const int HORARIO = 1;
 const int ANTI_HORARIO = -1;
 const int PARADO = 0;
 
-// MPU6050
 const int MPU_ADDR = 0x68;
 
 float gyroZOffset = 0;
@@ -102,7 +117,6 @@ unsigned long ultimoTempoGyro = 0;
 const int TOLERANCIA_NORTE = 5;
 bool GYRO_INVERTIDO = false;
 
-// Serial
 int telaSerial = 0;
 unsigned long ultimoPrintSerial = 0;
 const unsigned long INTERVALO_SERIAL = 1000;
@@ -160,7 +174,7 @@ void setup() {
   estadoRobo = "Procurando bola";
   imprimir_menu_serial();
 
-  Serial.println("Robo Soccer iniciado com motores calibrados");
+  Serial.println("Robo Soccer iniciado com LDR vetorial");
 }
 
 void loop() {
@@ -169,17 +183,8 @@ void loop() {
   atualizar_gyro();
   ir_reader();
 
-  lerLDR();
-  linhaBrancaDetectada = detectarBranco();
-
-  if (linhaBrancaDetectada) {
-    stop_robot();
-    dribbler_parar();
-    estadoRobo = "Linha branca detectada!";
-    digitalWrite(led_pin, HIGH);
+  if (verificar_linha()) {
     return;
-  } else {
-    digitalWrite(led_pin, LOW);
   }
 
   if (!bolaCapturada && parede_muito_perto()) {
@@ -221,6 +226,79 @@ void loop() {
   seguir_bola_simples();
 
   delay(60);
+}
+
+bool verificar_linha() {
+  lerLDR();
+  linhaBrancaDetectada = detectarBranco();
+  calcularDirecaoLinha();
+
+  if (linhaBrancaDetectada) {
+    dribbler_parar();
+    estadoRobo = "Linha branca detectada!";
+    digitalWrite(led_pin, HIGH);
+    afastar_da_linha();
+    return true;
+  }
+
+  digitalWrite(led_pin, LOW);
+  return false;
+}
+
+void calcularDirecaoLinha() {
+  float somaX = 0;
+  float somaY = 0;
+  int sensoresAtivos = 0;
+
+  for (int i = 0; i < 16; i++) {
+    bool branco;
+
+    if (BRANCO_VALOR_MAIOR) {
+      branco = ldr[i] > LIMIAR_BRANCO;
+    } else {
+      branco = ldr[i] < LIMIAR_BRANCO;
+    }
+
+    if (branco) {
+      somaX += vectorX[i];
+      somaY += vectorY[i];
+      sensoresAtivos++;
+    }
+  }
+
+  if (sensoresAtivos == 0) {
+    lineAngle = 500;
+    return;
+  }
+
+  lineAngle = atan2(somaY, somaX) * 180.0 / PI;
+
+  if (lineAngle < 0) {
+    lineAngle += 360;
+  }
+}
+
+void afastar_da_linha() {
+  if (lineAngle == 500) {
+    stop_robot();
+    return;
+  }
+
+  estadoRobo = "Fugindo da linha";
+
+  if (lineAngle >= 45 && lineAngle < 135) {
+    move_back();
+  } else if (lineAngle >= 225 && lineAngle < 315) {
+    move_foward();
+  } else if (lineAngle >= 135 && lineAngle < 225) {
+    move_right();
+  } else {
+    move_left();
+  }
+
+  delay(350);
+  stop_robot();
+  delay(100);
 }
 
 void ir_reader() {
@@ -294,8 +372,6 @@ bool fim_curso_acionado() {
   return estadoFiltrado;
 }
 
-// ===== DRIBBLER / ESC NOVO =====
-
 void dribbler_iniciar() {
   esc.attach(DRIBBLER_ESC_PIN);
   esc.writeMicroseconds(DRIBBLER_MIN_US);
@@ -333,8 +409,6 @@ void dribbler_parar() {
   dribblerMicroAtual = DRIBBLER_MIN_US;
   dribblerLigado = false;
 }
-
-// ===== MOTORES =====
 
 void motor_1(int sentido, int speed) {
   if (sentido == HORARIO) {
@@ -424,14 +498,26 @@ void right_rotation() {
   motor_4(HORARIO, M4_RIGHT_ROT_SPEED);
 }
 
+void move_left() {
+  motor_1(HORARIO, M1_LEFT_SPEED);
+  motor_2(ANTI_HORARIO, M2_LEFT_SPEED);
+  motor_3(ANTI_HORARIO, M3_LEFT_SPEED);
+  motor_4(ANTI_HORARIO, M4_LEFT_SPEED);
+}
+
+void move_right() {
+  motor_1(ANTI_HORARIO, M1_RIGHT_SPEED);
+  motor_2(HORARIO, M2_RIGHT_SPEED);
+  motor_3(HORARIO, M3_RIGHT_SPEED);
+  motor_4(HORARIO, M4_RIGHT_SPEED);
+}
+
 void stop_robot() {
   motor_1(PARADO, 0);
   motor_2(PARADO, 0);
   motor_3(PARADO, 0);
   motor_4(PARADO, 0);
 }
-
-// ===== MPU6050 =====
 
 void mpu6050_iniciar() {
   Wire.beginTransmission(MPU_ADDR);
@@ -546,8 +632,6 @@ void olhar_para_norte() {
   }
 }
 
-// ===== ULTRASSONICO =====
-
 float ler_distancia_cm() {
   long duracao;
   float distancia;
@@ -622,8 +706,6 @@ void andar_ate_distancia() {
   }
 }
 
-// ===== LDR =====
-
 void setMuxChannel(int canal) {
   digitalWrite(S0, canal & 0x01);
   digitalWrite(S1, (canal >> 1) & 0x01);
@@ -662,8 +744,6 @@ bool detectarBranco() {
 
   return false;
 }
-
-// ===== SERIAL =====
 
 void imprimir_menu_serial() {
   Serial.println();
@@ -741,6 +821,8 @@ void imprimir_situacao_robo() {
   Serial.println(linhaBrancaDetectada ? "SIM" : "NAO");
   Serial.print("| Sensor branco: ");
   Serial.println(sensorBranco);
+  Serial.print("| Angulo linha: ");
+  Serial.println(lineAngle);
   Serial.print("| Distancia: ");
   Serial.print(ultimaDistanciaCm);
   Serial.println(" cm");
@@ -819,6 +901,9 @@ void imprimir_ldr() {
 
   Serial.print("| Sensor branco: ");
   Serial.println(sensorBranco);
+
+  Serial.print("| Angulo linha: ");
+  Serial.println(lineAngle);
 
   Serial.print("| Limiar: ");
   Serial.println(LIMIAR_BRANCO);
